@@ -1,6 +1,7 @@
 package bloom_tests
 
 import bloom ".."
+import "base:intrinsics"
 import "core:math"
 import "core:slice"
 import "core:testing"
@@ -273,4 +274,27 @@ test_hll_deserialize_rejects_oversized_register :: proc(t: ^testing.T) {
 	reseal(data)
 	_, err := bloom.hll_deserialize(data)
 	testing.expect_value(t, err, bloom.Error(bloom.Decode_Error.Corrupt))
+}
+
+@(test)
+test_hll_sparse_conversion_matches_reference_registers :: proc(t: ^testing.T) {
+	// Recompute every register from the hashes and compare, at every
+	// precision, including hashes whose tails are all zeros.
+	for p in bloom.MIN_PRECISION ..= bloom.MAX_PRECISION {
+		h, _ := bloom.hll_make(p)
+		defer bloom.hll_destroy(&h)
+		pu := uint(p)
+		want := make([]u8, 1 << pu)
+		defer delete(want)
+		edge := [?]u64{0, 1, max(u64), 1 << 38, 1 << 39, 1 << 40, u64(1) << (63 - pu)}
+		for i in 0 ..< len(want) + len(edge) {
+			x := i < len(edge) ? edge[i] : item_hash(i)
+			testing.expect_value(t, bloom.hll_add_hash(&h, x), nil)
+			index := x >> (64 - pu)
+			rho := u8(min(uint(intrinsics.count_leading_zeros(x << pu)) + 1, 65 - pu))
+			want[index] = max(want[index], rho)
+		}
+		testing.expect(t, !bloom.hll_is_sparse(&h))
+		testing.expectf(t, slice.equal(h.registers, want), "precision %v registers differ", p)
+	}
 }
