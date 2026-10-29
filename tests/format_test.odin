@@ -214,3 +214,33 @@ test_every_structure_frees_all_memory :: proc(t: ^testing.T) {
 	testing.expectf(t, len(track.allocation_map) == 0, "%v allocations leaked", len(track.allocation_map))
 	testing.expectf(t, len(track.bad_free_array) == 0, "%v bad frees", len(track.bad_free_array))
 }
+
+@(test)
+test_count_min_rejects_format_version_1 :: proc(t: ^testing.T) {
+	// Version 1 sketches placed counts differently, so reading them would
+	// give under-estimates.
+	c, _ := bloom.count_min_make(0.1, 0.1)
+	defer bloom.count_min_destroy(&c)
+	data, _ := bloom.count_min_serialize(&c)
+	defer delete(data)
+	testing.expect_value(t, data[4], 2)
+	data[4] = 1
+	reseal(data)
+	_, err := bloom.count_min_deserialize(data)
+	testing.expect_value(t, err, bloom.Error(bloom.Decode_Error.Unsupported_Version))
+}
+
+@(test)
+test_filters_still_read_format_version_1 :: proc(t: ^testing.T) {
+	f, _ := bloom.filter_make(100, 0.01)
+	defer bloom.filter_destroy(&f)
+	bloom.filter_add(&f, "kept")
+	data, _ := bloom.filter_serialize(&f)
+	defer delete(data)
+	data[4] = 1
+	reseal(data)
+	g, err := bloom.filter_deserialize(data)
+	testing.expect_value(t, err, nil)
+	defer bloom.filter_destroy(&g)
+	testing.expect(t, bloom.filter_contains(&g, "kept"))
+}

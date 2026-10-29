@@ -87,8 +87,14 @@ Error :: union #shared_nil {
 	runtime.Allocator_Error,
 }
 
-// FORMAT_VERSION is the version byte written by every `*_serialize` procedure.
-FORMAT_VERSION :: 1
+/*
+FORMAT_VERSION is the version byte written by every `*_serialize` procedure.
+
+Version 2 changed where a Count_Min stores each count, so count_min_deserialize
+rejects version 1 input with `.Unsupported_Version`. The other structures read
+both versions.
+*/
+FORMAT_VERSION :: 2
 
 // DEFAULT_SEED is the hash seed used when a constructor is not given one.
 DEFAULT_SEED :: u64(0x6f64696e626c6f6f)
@@ -207,9 +213,10 @@ Reader :: struct {
 }
 
 // reader_open checks the magic, version, kind and checksum, and returns a
-// reader positioned at the start of the payload.
+// reader positioned at the start of the payload. Versions below `min_version`
+// are rejected as unsupported.
 @(private)
-reader_open :: proc(data: []byte, kind: Kind) -> (r: Reader, err: Decode_Error) {
+reader_open :: proc(data: []byte, kind: Kind, min_version: u8 = 1) -> (r: Reader, err: Decode_Error) {
 	if len(data) < HEADER_SIZE + 4 {
 		return {}, .Truncated
 	}
@@ -219,7 +226,7 @@ reader_open :: proc(data: []byte, kind: Kind) -> (r: Reader, err: Decode_Error) 
 			return {}, .Bad_Magic
 		}
 	}
-	if data[4] == 0 || data[4] > FORMAT_VERSION {
+	if data[4] < min_version || data[4] == 0 || data[4] > FORMAT_VERSION {
 		return {}, .Unsupported_Version
 	}
 	if data[5] != u8(kind) {

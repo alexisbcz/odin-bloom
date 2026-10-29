@@ -135,3 +135,46 @@ test_count_min_serialize_round_trip :: proc(t: ^testing.T) {
 		testing.expect_value(t, bloom.count_min_estimate_hash(&g, h), bloom.count_min_estimate_hash(&c, h))
 	}
 }
+
+// heavy_hitter_violations adds one item 1000 times and counts how many of
+// `queries` other items are estimated above `bound`. A query goes over only
+// when it collides with the heavy item in every row.
+@(private = "file")
+heavy_hitter_violations :: proc(c: ^bloom.Count_Min, bound: u64, queries: int) -> int {
+	bloom.count_min_add_hash(c, item_hash(-1), 1000)
+	violations := 0
+	for i in 0 ..< queries {
+		if bloom.count_min_estimate_hash(c, item_hash(i)) > bound {
+			violations += 1
+		}
+	}
+	return violations
+}
+
+@(test)
+test_count_min_rows_are_independent :: proc(t: ^testing.T) {
+	// With double hashing, two items that collide in two rows collide in all
+	// of them, so this failed about once in 512 queries instead of e^-14.
+	queries := 200_000
+	a, _ := bloom.count_min_make_exact(32, 14)
+	defer bloom.count_min_destroy(&a)
+	v := heavy_hitter_violations(&a, 100, queries)
+	testing.expectf(t, v <= 2, "power-of-two width: %v of %v queries over the bound", v, queries)
+
+	epsilon, delta := 0.1, 1e-6
+	b, _ := bloom.count_min_make(epsilon, delta)
+	defer bloom.count_min_destroy(&b)
+	v = heavy_hitter_violations(&b, u64(epsilon * 1000), queries)
+	testing.expectf(t, v <= 2, "sized sketch: %v of %v queries over the bound", v, queries)
+}
+
+@(test)
+test_count_min_make_handles_extreme_parameters :: proc(t: ^testing.T) {
+	// 1 / 5e-324 is infinite; the depth must come from -ln(delta) instead.
+	c, err := bloom.count_min_make(0.1, 5e-324)
+	testing.expect_value(t, err, nil)
+	testing.expect_value(t, c.depth, 745)
+	bloom.count_min_destroy(&c)
+	_, err = bloom.count_min_make(1e-300, 0.01)
+	testing.expect_value(t, err, bloom.Error(bloom.Usage_Error.Invalid_Parameter))
+}

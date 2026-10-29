@@ -52,9 +52,15 @@ count_min_make :: proc(
 	if !(epsilon > 0 && epsilon < 1) || !(delta > 0 && delta < 1) {
 		return {}, .Invalid_Parameter
 	}
-	width := u64(math.ceil(math.E / epsilon))
-	depth := int(math.ceil(math.ln(1 / delta)))
-	return count_min_make_exact(width, max(depth, 1), seed, allocator)
+	// Bound the floats before converting them: converting a value too large
+	// for the integer type gives a different result on each platform.
+	// `-ln(delta)` stays finite for subnormal delta, where `1 / delta` does not.
+	width_f := math.ceil(math.E / epsilon)
+	depth_f := math.ceil(-math.ln(delta))
+	if width_f > f64(MAX_COUNT_MIN_CELLS) || depth_f > f64(MAX_COUNT_MIN_CELLS) {
+		return {}, .Invalid_Parameter
+	}
+	return count_min_make_exact(u64(width_f), max(int(depth_f), 1), seed, allocator)
 }
 
 /*
@@ -97,10 +103,20 @@ saturating_add :: proc "contextless" (a, b: u64) -> u64 {
 	return s < a ? max(u64) : s
 }
 
+// count_min_cell returns the index of the counter that row `row` uses for the
+// item with hash `h`. Each row draws its own SplitMix64 output from `h`, so the
+// rows behave as independent hash functions. Double hashing would not do here:
+// two items that collide in two rows would then collide in every row, and the
+// `delta` bound would no longer hold.
+@(private)
+count_min_cell :: proc "contextless" (c: ^Count_Min, h: u64, row: int) -> u64 {
+	return u64(row) * c.width + mix64(h + u64(row) * 0x9e3779b97f4a7c15) % c.width
+}
+
 // count_min_add_hash adds `count` occurrences of the item with hash `h`.
 count_min_add_hash :: proc(c: ^Count_Min, h: u64, count: u64 = 1) {
 	for row in 0 ..< c.depth {
-		cell := &c.counters[u64(row) * c.width + double_hash(h, u64(row), c.width)]
+		cell := &c.counters[count_min_cell(c, h, row)]
 		cell^ = saturating_add(cell^, count)
 	}
 	c.total = saturating_add(c.total, count)
@@ -132,7 +148,7 @@ count_min_estimate_hash :: proc(c: ^Count_Min, h: u64) -> u64 {
 	}
 	lowest := max(u64)
 	for row in 0 ..< c.depth {
-		lowest = min(lowest, c.counters[u64(row) * c.width + double_hash(h, u64(row), c.width)])
+		lowest = min(lowest, c.counters[count_min_cell(c, h, row)])
 	}
 	return lowest
 }
@@ -224,7 +240,9 @@ Returns:
 - err: a Decode_Error for malformed input, or an allocator error.
 */
 count_min_deserialize :: proc(data: []byte, allocator := context.allocator) -> (c: Count_Min, err: Error) {
-	r := reader_open(data, .Count_Min) or_return
+	// Version 1 placed counts with double hashing, so its counters do not
+	// line up with count_min_cell.
+	r := reader_open(data, .Count_Min, min_version = 2) or_return
 	width := read_u64(&r) or_return
 	depth := read_u32(&r) or_return
 	seed := read_u64(&r) or_return
