@@ -106,7 +106,7 @@ odin run examples/basic
 
 ## Design notes
 
-- Items hash once with XXH64. Filters and sketches derive their positions from that hash by Kirsch and Mitzenmacher double hashing, so the `*_add_hash` procedures let you hash an item once and feed several structures that share a seed.
+- Items hash once with XXH64, so the `*_add_hash` procedures let you hash an item once and feed several structures that share a seed. Bloom filters derive their positions from that hash by Kirsch and Mitzenmacher double hashing. `Count_Min` gives each row its own SplitMix64 output instead, because its `delta` bound needs rows that act as independent hash functions.
 - `Hll` follows HyperLogLog++: 64-bit hashes, a sorted sparse list with 25-bit indices for small sets, and dense 8-bit registers once the list would outgrow them. Dense estimates use Ertl's improved estimator, which needs no empirical bias tables and stays unbiased across the whole range.
 - `Cuckoo_Filter` keeps the last homeless fingerprint in a one-entry stash, so a failed insert never drops an item that the filter already held. The next insert reports `.Full`.
 - Counters saturate instead of wrapping: at 255 in `Counting_Filter`, at the largest `u64` in `Count_Min`.
