@@ -51,7 +51,8 @@ Returns:
   an allocator error.
 */
 cuckoo_filter_make :: proc(capacity: int, seed := DEFAULT_SEED, allocator := context.allocator) -> (f: Cuckoo_Filter, err: Error) {
-	if capacity <= 0 {
+	// Checked first so that `capacity * 100` below cannot wrap around.
+	if capacity <= 0 || u64(capacity) > MAX_CUCKOO_BUCKETS * BUCKET_SIZE {
 		return {}, .Invalid_Parameter
 	}
 	needed := (u64(capacity) * 100 + 95 * BUCKET_SIZE - 1) / (95 * BUCKET_SIZE)
@@ -319,9 +320,13 @@ cuckoo_filter_clear :: proc(f: ^Cuckoo_Filter) {
 /*
 cuckoo_filter_merge adds every item of `src` into `dst`.
 
+`dst` and `src` may be the same filter, which adds a second copy of every
+item. That case copies the buckets first, using the filter's allocator.
+
 Returns `.Incompatible` when the filters differ in bucket count or seed, and
 `dst` is unchanged. Returns `.Full` when `dst` runs out of room; `dst` then
-holds all of its own items and some of the items of `src`.
+holds all of its own items and some of the items of `src`. Returns an
+allocator error when a self-merge cannot copy the buckets; `dst` is unchanged.
 */
 cuckoo_filter_merge :: proc(dst, src: ^Cuckoo_Filter) -> Error {
 	if dst.bucket_count != src.bucket_count || dst.seed != src.seed {
@@ -330,13 +335,24 @@ cuckoo_filter_merge :: proc(dst, src: ^Cuckoo_Filter) -> Error {
 	if dst.count + src.count > len(dst.slots) + 1 {
 		return .Full
 	}
-	for fp, n in src.slots {
+	// Inserting into the filter being read moves fingerprints under the loop,
+	// so a self-merge reads from a snapshot.
+	slots := src.slots
+	stash_fp, stash_index := src.stash_fp, src.stash_index
+	if dst == src {
+		slots = make([]u16, len(src.slots), dst.allocator) or_return
+		copy(slots, src.slots)
+	}
+	defer if dst == src {
+		delete(slots, dst.allocator)
+	}
+	for fp, n in slots {
 		if fp != 0 {
 			cuckoo_insert(dst, u64(n / BUCKET_SIZE), fp) or_return
 		}
 	}
-	if src.stash_fp != 0 {
-		cuckoo_insert(dst, src.stash_index, src.stash_fp) or_return
+	if stash_fp != 0 {
+		cuckoo_insert(dst, stash_index, stash_fp) or_return
 	}
 	return nil
 }

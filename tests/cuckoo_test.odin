@@ -218,3 +218,66 @@ test_cuckoo_deserialize_rejects_non_power_of_two :: proc(t: ^testing.T) {
 	_, err := bloom.cuckoo_filter_deserialize(data)
 	testing.expect_value(t, err, bloom.Error(bloom.Decode_Error.Corrupt))
 }
+
+@(test)
+test_cuckoo_make_rejects_capacity_that_overflows_sizing :: proc(t: ^testing.T) {
+	// 2^62 * 100 wraps to 0 in u64, which used to yield a 1-bucket filter.
+	want := bloom.Error(bloom.Usage_Error.Invalid_Parameter)
+	_, err := bloom.cuckoo_filter_make(1 << 62)
+	testing.expect_value(t, err, want)
+	_, err = bloom.cuckoo_filter_make(int(bloom.MAX_CUCKOO_BUCKETS * bloom.BUCKET_SIZE) + 1)
+	testing.expect_value(t, err, want)
+}
+
+@(test)
+test_cuckoo_self_merge_doubles_every_item :: proc(t: ^testing.T) {
+	// At 88% load the merge has to evict, which used to move fingerprints
+	// under the loop reading them: some items got three copies, some one.
+	f, _ := bloom.cuckoo_filter_make_exact(512)
+	defer bloom.cuckoo_filter_destroy(&f)
+	n := 900
+	for i in 0 ..< n {
+		k := key(i)
+		testing.expect_value(t, bloom.cuckoo_filter_add(&f, k[:]), nil)
+	}
+	testing.expect_value(t, bloom.cuckoo_filter_merge(&f, &f), nil)
+	testing.expect_value(t, bloom.cuckoo_filter_count(&f), 2 * n)
+	for i in 0 ..< n {
+		k := key(i)
+		testing.expect_value(t, bloom.cuckoo_filter_remove(&f, k[:]), nil)
+		testing.expect_value(t, bloom.cuckoo_filter_remove(&f, k[:]), nil)
+	}
+	testing.expect_value(t, bloom.cuckoo_filter_count(&f), 0)
+	for i in 0 ..< n {
+		k := key(i)
+		testing.expectf(t, !bloom.cuckoo_filter_contains(&f, k[:]), "item %v has a third copy", i)
+	}
+}
+
+@(test)
+test_cuckoo_stash_survives_serialize_and_merge :: proc(t: ^testing.T) {
+	f, _ := bloom.cuckoo_filter_make_exact(2)
+	defer bloom.cuckoo_filter_destroy(&f)
+	added := 0
+	for i in 0 ..< 100 {
+		k := key(i)
+		if bloom.cuckoo_filter_add(&f, k[:]) != nil {
+			break
+		}
+		added += 1
+	}
+	testing.expect(t, f.stash_fp != 0)
+	data, _ := bloom.cuckoo_filter_serialize(&f)
+	defer delete(data)
+	g, err := bloom.cuckoo_filter_deserialize(data)
+	testing.expect_value(t, err, nil)
+	defer bloom.cuckoo_filter_destroy(&g)
+	e, _ := bloom.cuckoo_filter_make_exact(2)
+	defer bloom.cuckoo_filter_destroy(&e)
+	testing.expect_value(t, bloom.cuckoo_filter_merge(&e, &f), nil)
+	for i in 0 ..< added {
+		k := key(i)
+		testing.expectf(t, bloom.cuckoo_filter_contains(&g, k[:]), "decoded filter lost %v", i)
+		testing.expectf(t, bloom.cuckoo_filter_contains(&e, k[:]), "merged filter lost %v", i)
+	}
+}
